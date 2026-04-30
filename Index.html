@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>OSV | Object Scanning Verification</title>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd"></script>
+    <style>
+        :root {
+            --neon-green: #00ff41;
+            --dark-bg: #0a0a0a;
+            --panel-bg: #161616;
+        }
+
+        body {
+            background-color: var(--dark-bg);
+            color: #fff;
+            font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            margin: 0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            overflow: hidden;
+        }
+
+        .scanner-container {
+            width: 90%;
+            max-width: 400px;
+            background: var(--panel-bg);
+            border: 1px solid #333;
+            border-radius: 12px;
+            padding: 20px;
+            box-shadow: 0 20px 50px rgba(0,0,0,0.8);
+        }
+
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            background: #ff3e3e;
+            border-radius: 50%;
+            display: inline-block;
+            margin-right: 5px;
+        }
+
+        .status-dot.active { background: var(--neon-green); box-shadow: 0 0 10px var(--neon-green); }
+
+        .viewport {
+            position: relative;
+            width: 100%;
+            aspect-ratio: 1/1;
+            background: #000;
+            border-radius: 8px;
+            overflow: hidden;
+            border: 1px solid #444;
+        }
+
+        video {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            transform: scaleX(1); /* Ensure no mirroring for back camera */
+        }
+
+        canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 10;
+        }
+
+        .controls {
+            margin-top: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        button {
+            padding: 16px;
+            border-radius: 6px;
+            border: none;
+            font-weight: 800;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            cursor: pointer;
+            transition: 0.2s ease;
+        }
+
+        #start-btn {
+            background: #2979ff;
+            color: white;
+        }
+
+        #verify-btn {
+            background: #333;
+            color: #777;
+        }
+
+        #verify-btn.unlocked {
+            background: var(--neon-green);
+            color: #000;
+            box-shadow: 0 0 20px rgba(0,255,65,0.4);
+        }
+
+        .log {
+            margin-top: 15px;
+            font-size: 10px;
+            color: #666;
+            text-align: center;
+            font-family: monospace;
+        }
+    </style>
+</head>
+<body>
+
+<div class="scanner-container">
+    <div class="header">
+        <span style="font-size: 12px; font-weight: bold; color: #888;">TARGET: <span id="target-label" style="color: #2979ff;">CELL PHONE</span></span>
+        <span style="font-size: 10px;"><span id="dot" class="status-dot"></span> <span id="status-text">OFFLINE</span></span>
+    </div>
+
+    <div class="viewport">
+        <video id="webcam" autoplay playsinline muted></video>
+        <canvas id="overlay"></canvas>
+    </div>
+
+    <div class="controls">
+        <button id="start-btn">INITIALIZE BACK CAMERA</button>
+        <button id="verify-btn" disabled>VERIFY OBJECT</button>
+    </div>
+
+    <div class="log" id="log">SYSTEM_IDLE // READY_FOR_UGC_AUTH</div>
+</div>
+
+<script>
+    const video = document.getElementById('webcam');
+    const canvas = document.getElementById('overlay');
+    const ctx = canvas.getContext('2d');
+    const startBtn = document.getElementById('start-btn');
+    const verifyBtn = document.getElementById('verify-btn');
+    const log = document.getElementById('log');
+    const dot = document.getElementById('dot');
+    const statusText = document.getElementById('status-text');
+
+    let model = null;
+    const TARGET_OBJECT = "cell phone"; // Standard COCO class
+
+    async function startScanner() {
+        startBtn.disabled = true;
+        startBtn.innerText = "LOADING AI...";
+        log.innerText = "DOWNLOAD_MODEL_CORE...";
+
+        try {
+            // 1. Load Model
+            model = await cocoSsd.load();
+            
+            // 2. Access Back Camera
+            const stream = await navigator.mediaDevices.getUserMedia({
+                video: { 
+                    facingMode: { ideal: "environment" },
+                    width: { ideal: 720 },
+                    height: { ideal: 720 }
+                },
+                audio: false
+            });
+            
+            video.srcObject = stream;
+            
+            video.onloadeddata = () => {
+                canvas.width = video.videoWidth;
+                canvas.height = video.videoHeight;
+                log.innerText = "AUTH_FEED_ESTABLISHED";
+                dot.classList.add('active');
+                statusText.innerText = "SCANNING";
+                startBtn.style.display = "none";
+                detectFrame();
+            };
+        } catch (err) {
+            log.innerText = "ERR: CAMERA_DENIED_OR_NOT_FOUND";
+            startBtn.disabled = false;
+            startBtn.innerText = "RETRY ACTIVATION";
+        }
+    }
+
+    async function detectFrame() {
+        const predictions = await model.detect(video);
+        
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        let found = false;
+
+        predictions.forEach(p => {
+            if (p.class === TARGET_OBJECT && p.score > 0.6) {
+                found = true;
+                drawBox(p);
+            }
+        });
+
+        if (found) {
+            verifyBtn.disabled = false;
+            verifyBtn.classList.add('unlocked');
+            log.innerText = "SCAN_MATCH: TARGET_CONFIRMED";
+        } else {
+            verifyBtn.disabled = true;
+            verifyBtn.classList.remove('unlocked');
+            log.innerText = "SCANNING_FOR_TARGET...";
+        }
+
+        requestAnimationFrame(detectFrame);
+    }
+
+    function drawBox(p) {
+        ctx.strokeStyle = "#00ff41";
+        ctx.lineWidth = 6;
+        ctx.strokeRect(...p.bbox);
+        
+        ctx.fillStyle = "#00ff41";
+        ctx.font = "bold 30px Arial";
+        ctx.fillText("VALID_OBJECT", p.bbox[0], p.bbox[1] > 40 ? p.bbox[1] - 10 : 40);
+    }
+
+    startBtn.addEventListener('click', startScanner);
+    verifyBtn.addEventListener('click', () => alert("UGC PURCHASE AUTHORIZED"));
+</script>
+
+</body>
+</html>
